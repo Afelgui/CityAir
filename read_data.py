@@ -3,6 +3,11 @@ import numpy as np
 import pandas as pd
 from glob import glob
 import os
+# ML
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import HistGradientBoostingRegressor
+from catboost import CatBoostRegressor
+import xgboost as xgb
 
 def load_field_data(data_dir='data_example/field_data', gases=None):
     if gases is None:
@@ -50,12 +55,12 @@ def load_lab_data(data_dir='data_example/lab_data', gases=None):
     df['MH_grad'] = df['MH'].diff() if 'MH' in df else np.nan
     return df
 
-# --- Универсальная функция для расчёта baseline-маски (с очисткой по IQR/Isolation Forest) ---
 def compute_baseline_mask(
     df,
     gas,
     signal_col=None,
     baseline_eps=0.01,
+    cross_gases=None,     
     use_iqr=True,
     use_isolation=False,
     contamination=None,
@@ -73,7 +78,12 @@ def compute_baseline_mask(
     valid_mask = df[signal_col].notna()
     bl_mask = (df[gas].fillna(0) < baseline_eps) & valid_mask
 
-    #  Фильтруем baseline по IQR (убираем выбросы по сигналу)
+    if cross_gases:
+        for cg in cross_gases:
+            if cg in df.columns:
+                bl_mask = bl_mask & (df[cg].fillna(0).abs() < baseline_eps)
+
+    #  Фильтруем baseline по IQR 
     if use_iqr:
         q1 = df.loc[bl_mask, signal_col].quantile(0.25)
         q3 = df.loc[bl_mask, signal_col].quantile(0.75)
@@ -83,7 +93,7 @@ def compute_baseline_mask(
         iqr_mask = df[signal_col].between(lower, upper)
         bl_mask = bl_mask & iqr_mask
 
-    #   чистим baseline с помощью Isolation Forest 
+    #    Isolation Forest 
     if use_isolation:
         features = [signal_col]
         if temp_col in df: features.append(temp_col)
@@ -110,17 +120,19 @@ def compute_baseline_mask(
 
     return bl_mask
 
-def add_bl_stat_masks(df, gases=None, std_thr=0.1, window=5, baseline_eps=0.001, use_isolation=True, contamination=None, verbose=True):
+def add_bl_stat_masks(df, gases=None, std_thr=0.1, window=5, baseline_eps=0.001, use_isolation=True, contamination=None, verbose=True, cross_gases_map=None):
     if gases is None:
         gases = ['NO2', 'CO', 'O3', 'SO2', 'H2S']
 
     for gas in gases:
         signal_col = f"{gas}op1"
+        cross_gases = cross_gases_map.get(gas, []) if cross_gases_map else []
 
         if gas in df.columns and signal_col in df.columns:
             df[f"{signal_col}_bl"] = compute_baseline_mask(
                 df, gas,
                 baseline_eps=baseline_eps,
+                cross_gases=cross_gases,  
                 use_iqr=True,
                 use_isolation=use_isolation,
                 contamination=contamination,
@@ -142,3 +154,22 @@ def add_bl_stat_masks(df, gases=None, std_thr=0.1, window=5, baseline_eps=0.001,
                 print(f"{gas}: пропущены (нет данных)")
 
     return df
+
+def get_model(name, **params):
+    if name == 'linear': return LinearRegression(**params)
+    if name == 'catboost': return CatBoostRegressor(verbose=0, random_seed=42, **params)
+    if name == 'histgb': return HistGradientBoostingRegressor(random_state=42, **params)
+    if name == 'xgb': return xgb.XGBRegressor(random_state=42, **params)
+    raise ValueError(f"Неизвестная модель: {name}")
+
+def get_importance(model, feat_names):
+    if hasattr(model, "feature_importances_"):
+        return dict(zip(feat_names, model.feature_importances_))
+    elif hasattr(model, "coef_"):
+        coefs = model.coef_
+        if coefs.ndim == 1:
+            return dict(zip(feat_names, coefs))
+        else:
+            return dict(zip(feat_names, coefs.ravel()))
+    else:
+        return {}
