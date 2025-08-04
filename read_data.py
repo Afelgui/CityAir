@@ -3,11 +3,7 @@ import numpy as np
 import pandas as pd
 from glob import glob
 import os
-# ML
-from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import HistGradientBoostingRegressor
-from catboost import CatBoostRegressor
-import xgboost as xgb
+
 
 def load_field_data(data_dir='data_example/field_data', gases=None):
     if gases is None:
@@ -120,7 +116,12 @@ def compute_baseline_mask(
 
     return bl_mask
 
-def add_bl_stat_masks(df, gases=None, std_thr=0.1, window=5, baseline_eps=0.001, use_isolation=True, contamination=None, verbose=True, cross_gases_map=None):
+def add_bl_stat_masks(
+    df, gases=None, std_thr=0.1, window=5,
+    baseline_eps=0.001, use_isolation=True,
+    contamination=None, verbose=True, cross_gases_map=None
+):
+    # gases по умолчанию
     if gases is None:
         gases = ['NO2', 'CO', 'O3', 'SO2', 'H2S']
 
@@ -129,24 +130,25 @@ def add_bl_stat_masks(df, gases=None, std_thr=0.1, window=5, baseline_eps=0.001,
         cross_gases = cross_gases_map.get(gas, []) if cross_gases_map else []
 
         if gas in df.columns and signal_col in df.columns:
+            # baseline
             df[f"{signal_col}_bl"] = compute_baseline_mask(
                 df, gas,
                 baseline_eps=baseline_eps,
-                cross_gases=cross_gases,  
+                cross_gases=cross_gases,
                 use_iqr=True,
                 use_isolation=use_isolation,
                 contamination=contamination,
                 verbose=verbose
-            )           
-
+            )
+            # stat
             rolling_std = df[signal_col].rolling(window, center=True).std()
             df[f"{signal_col}_stat"] = (rolling_std < std_thr).fillna(False) & (~df[f"{signal_col}_bl"])
 
-            if verbose:               
+            if verbose:
                 n_total = len(df)
                 n_bl = df[f'{signal_col}_bl'].sum()
                 n_stat = df[f'{signal_col}_stat'].sum()
-                print(f"{gas}: baseline = {n_bl}, stat = {n_stat}, всего = {n_total}")            
+                print(f"{gas}: baseline = {n_bl}, stat = {n_stat}, всего = {n_total}")
         else:
             df[f"{signal_col}_bl"] = False
             df[f"{signal_col}_stat"] = False
@@ -155,21 +157,3 @@ def add_bl_stat_masks(df, gases=None, std_thr=0.1, window=5, baseline_eps=0.001,
 
     return df
 
-def get_model(name, **params):
-    if name == 'linear': return LinearRegression(**params)
-    if name == 'catboost': return CatBoostRegressor(verbose=0, random_seed=42, **params)
-    if name == 'histgb': return HistGradientBoostingRegressor(random_state=42, **params)
-    if name == 'xgb': return xgb.XGBRegressor(random_state=42, **params)
-    raise ValueError(f"Неизвестная модель: {name}")
-
-def get_importance(model, feat_names):
-    if hasattr(model, "feature_importances_"):
-        return dict(zip(feat_names, model.feature_importances_))
-    elif hasattr(model, "coef_"):
-        coefs = model.coef_
-        if coefs.ndim == 1:
-            return dict(zip(feat_names, coefs))
-        else:
-            return dict(zip(feat_names, coefs.ravel()))
-    else:
-        return {}
